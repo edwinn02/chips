@@ -1139,10 +1139,8 @@
 
       <div class="panel">
         <h2>Reporte del evento</h2>
-        <p class="search-hint">Descarga un PDF con el resumen de inscritos, registros nuevos, modificaciones y entrega
-          de chips.</p>
-        <button class="btn btn-primary" style="margin-top:10px;" id="btn-export-event-pdf" onclick="exportEventPdf()">📄
-          Exportar PDF del evento</button>
+        <p class="search-hint">Descarga un PDF con el resumen de inscritos, registros nuevos, modificaciones y entrega de chips.</p>
+        <button class="btn btn-primary" style="margin-top:10px;" id="btn-export-event-pdf" onclick="exportEventPdf()">📄 Exportar PDF del evento</button>
       </div>
 
       <div class="panel" id="dashboard-empty-wrap" style="display:none;">
@@ -1291,6 +1289,12 @@
         <h2>Configurar heats (cronometraje)</h2>
         <div class="field-row" style="margin-bottom:14px;">
           <div style="flex:1; min-width:200px;">
+            <label class="search-hint" style="display:block; margin-bottom:6px;">Nombre de la carrera</label>
+            <input type="text" id="race-name-input" class="btn" style="cursor:text; width:100%;" placeholder="Ej: Carrera 5K Panamá 2026">
+          </div>
+        </div>
+        <div class="field-row" style="margin-bottom:14px;">
+          <div style="flex:1; min-width:200px;">
             <label class="search-hint" style="display:block; margin-bottom:6px;">Fecha de la carrera</label>
             <input type="date" id="race-date-input" class="btn" style="cursor:text; width:100%;">
           </div>
@@ -1346,6 +1350,30 @@
             <div class="l">última sincronización</div>
           </div>
         </div>
+      </div>
+
+      <div class="panel">
+        <h2>Contador de registros e importaciones</h2>
+        <div class="import-summary">
+          <div class="pill">
+            <div class="n mono" id="cfg-stat-baseline">0</div>
+            <div class="l">inicialmente registrados</div>
+          </div>
+          <div class="pill">
+            <div class="n mono" id="cfg-stat-new">0</div>
+            <div class="l">registros nuevos</div>
+          </div>
+          <div class="pill">
+            <div class="n mono" id="cfg-stat-mods">0</div>
+            <div class="l">modificaciones</div>
+          </div>
+        </div>
+        <p class="field-note">Estos números aparecen en el PDF del evento. Se acumulan automáticamente en cada
+          importación. Si alguna vez quedan mal (por ejemplo, después de activar esta función por primera vez con
+          corredores ya cargados), usa este botón para fijar la cantidad actual como línea base y contar en cero
+          desde ahí — no borra ningún corredor.</p>
+        <button class="btn btn-sm btn-ghost" id="btn-reset-event-stats" style="margin-top:8px;">Fijar cantidad actual
+          como línea base</button>
       </div>
 
       <div class="danger-zone">
@@ -1856,6 +1884,7 @@
     }
 
     function populateHeatConfigUI() {
+      document.getElementById('race-name-input').value = raceConfig.raceName || '';
       document.getElementById('race-date-input').value = raceConfig.raceDate || '';
       const heats = getUniqueHeats();
       const list = document.getElementById('heat-config-list');
@@ -1879,6 +1908,7 @@
     function cssSafe(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
     async function saveHeatConfig() {
+      const raceName = document.getElementById('race-name-input').value.trim();
       const raceDate = document.getElementById('race-date-input').value;
       const heats = getUniqueHeats();
       const heatStartTimes = {};
@@ -1886,10 +1916,10 @@
         const el = document.getElementById('heat-time-' + cssSafe(heat));
         if (el && el.value) heatStartTimes[heat] = el.value.length === 5 ? el.value + ':00' : el.value;
       });
-      raceConfig = { raceDate, heatStartTimes };
+      raceConfig = { ...raceConfig, raceName, raceDate, heatStartTimes };
       renderAll();
-      await submitOperation('setConfig', { raceDate, heatStartTimes }, { description: 'Configuración de heats' });
-      showToast('Horarios de salida guardados; resultados recalculados');
+      await submitOperation('setConfig', { raceName, raceDate, heatStartTimes }, { description: 'Configuración de la carrera' });
+      showToast('Configuración guardada; resultados recalculados');
     }
 
     /* ---------- llegadas (cronometraje manual) ---------- */
@@ -2316,6 +2346,11 @@
 
       document.getElementById('cfg-total').textContent = total;
       document.getElementById('cfg-last').textContent = fmtDate(lastSync);
+
+      const stats = raceConfig.eventStats;
+      document.getElementById('cfg-stat-baseline').textContent = stats ? stats.baselineTotal : '—';
+      document.getElementById('cfg-stat-new').textContent = stats ? stats.newRegistrations : '—';
+      document.getElementById('cfg-stat-mods').textContent = stats ? stats.modifications : '—';
     }
 
     function statusLabel(r) {
@@ -2483,8 +2518,18 @@
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(18);
-      doc.text('Reporte del Evento', marginX, y);
-      y += 22;
+      if (raceConfig.raceName) {
+        doc.text(raceConfig.raceName, marginX, y);
+        y += 22;
+        doc.setFontSize(12);
+        doc.setTextColor(90);
+        doc.text('Reporte del Evento', marginX, y);
+        doc.setTextColor(0);
+        y += 20;
+      } else {
+        doc.text('Reporte del Evento', marginX, y);
+        y += 22;
+      }
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(10);
@@ -2512,9 +2557,9 @@
         y += 10;
         doc.setFontSize(9);
         doc.setTextColor(180, 60, 40);
-        doc.text('Nota:', marginX, y);
+        doc.text('Nota: actualiza tu Google Apps Script a la última versión para ver los datos de', marginX, y);
         y += 12;
-        doc.text('', marginX, y);
+        doc.text('registros nuevos y modificaciones (Implementar > Administrar implementaciones > Nueva version).', marginX, y);
         doc.setTextColor(0);
       }
 
@@ -2677,6 +2722,19 @@
         await syncFromSheet(true);
         startPolling();
         renderAll();
+      });
+
+      document.getElementById('btn-reset-event-stats').addEventListener('click', async () => {
+        if (!gasUrl) { showToast('Primero conecta la base de datos', true); return; }
+        if (confirm('¿Fijar la cantidad actual de corredores (' + runners.length + ') como línea base? Los contadores de "registros nuevos" y "modificaciones" volverán a cero desde ahora. Ningún corredor se borra.')) {
+          try {
+            await gasPost({ action: 'resetEventStats' });
+            await syncFromSheet(true);
+            showToast('Línea base actualizada');
+          } catch (err) {
+            showToast('No se pudo actualizar: ' + err.message, true);
+          }
+        }
       });
 
       document.getElementById('btn-reset').addEventListener('click', async () => {
