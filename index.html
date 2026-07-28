@@ -1139,8 +1139,10 @@
 
       <div class="panel">
         <h2>Reporte del evento</h2>
-        <p class="search-hint">Descarga un PDF con el resumen de inscritos, registros nuevos, modificaciones y entrega de chips.</p>
-        <button class="btn btn-primary" style="margin-top:10px;" id="btn-export-event-pdf" onclick="exportEventPdf()">📄 Exportar PDF del evento</button>
+        <p class="search-hint">Descarga un PDF con el resumen de inscritos, registros nuevos, modificaciones y entrega
+          de chips.</p>
+        <button class="btn btn-primary" style="margin-top:10px;" id="btn-export-event-pdf" onclick="exportEventPdf()">📄
+          Exportar PDF del evento</button>
       </div>
 
       <div class="panel" id="dashboard-empty-wrap" style="display:none;">
@@ -2448,6 +2450,18 @@
       const stats = raceConfig.eventStats;
       const statsAvailable = !!stats;
 
+      if (appLogoBase64) {
+        try {
+          const props = doc.getImageProperties(appLogoBase64);
+          const maxW = 140, maxH = 54;
+          const scale = Math.min(maxW / props.width, maxH / props.height, 1);
+          const w = props.width * scale, h = props.height * scale;
+          doc.addImage(appLogoBase64, props.fileType, pageWidth - marginX - w, 40, w, h);
+        } catch (err) {
+          console.warn('No se pudo agregar el logo al PDF:', err);
+        }
+      }
+
       function sectionTitle(title) {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(13);
@@ -2498,9 +2512,9 @@
         y += 10;
         doc.setFontSize(9);
         doc.setTextColor(180, 60, 40);
-        doc.text('Nota: actualiza tu Google Apps Script a la última versión para ver los datos de', marginX, y);
+        doc.text('Nota:', marginX, y);
         y += 12;
-        doc.text('registros nuevos y modificaciones (Implementar > Administrar implementaciones > Nueva version).', marginX, y);
+        doc.text('', marginX, y);
         doc.setTextColor(0);
       }
 
