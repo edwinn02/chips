@@ -1401,7 +1401,7 @@
     const RUNNERS_CACHE_KEY = 'chip_runners_cache_v2';
     const CONFIG_CACHE_KEY = 'chip_config_cache_v2';
 
-    let runners = JSON.parse(localStorage.getItem(RUNNERS_CACHE_KEY) || '[]');
+    let runners = JSON.parse(localStorage.getItem(RUNNERS_CACHE_KEY) || '[]').map(normalizeRunner);
     let gasUrl = localStorage.getItem(GAS_URL_KEY) || '';
     let lastSync = localStorage.getItem(LAST_SYNC_KEY) || null;
     let isTimingEnabled = localStorage.getItem(TIMING_MODULE_KEY) === 'true';
