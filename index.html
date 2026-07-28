@@ -1288,7 +1288,7 @@
       </div>
 
       <div class="panel">
-        <h2>Configurar de horas de salidas</h2>
+        <h2>Configurar heats (cronometraje)</h2>
         <div class="field-row" style="margin-bottom:14px;">
           <div style="flex:1; min-width:200px;">
             <label class="search-hint" style="display:block; margin-bottom:6px;">Nombre de la carrera</label>
@@ -1609,6 +1609,8 @@
     function normalizeRunner(r) {
       return {
         ...r,
+        bib: r.bib === undefined || r.bib === null ? '' : String(r.bib),
+        epc: r.epc === undefined || r.epc === null ? '' : String(r.epc),
         status: r.status || 'pendiente',
         delivered_at: r.delivered_at || null,
         returned_at: r.returned_at || null,
