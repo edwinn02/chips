@@ -14,6 +14,7 @@
     href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap"
     rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <style>
     :root {
       --bg: #0E1013;
@@ -1134,6 +1135,12 @@
           </div>
         </div>
         <p class="search-hint">Haz clic en un número para ver la lista de corredores correspondiente.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Reporte del evento</h2>
+        <p class="search-hint">Descarga un PDF con el resumen de inscritos, registros nuevos, modificaciones y entrega de chips.</p>
+        <button class="btn btn-primary" style="margin-top:10px;" id="btn-export-event-pdf" onclick="exportEventPdf()">📄 Exportar PDF del evento</button>
       </div>
 
       <div class="panel" id="dashboard-empty-wrap" style="display:none;">
@@ -2417,6 +2424,88 @@
       if (!table) { showToast('No hay resultados para exportar', true); return; }
       const wb = XLSX.utils.table_to_book(table, { sheet: "Resultados" });
       XLSX.writeFile(wb, "Resultados_Carrera.xlsx");
+    }
+
+    function exportEventPdf() {
+      if (!window.jspdf) {
+        showToast('No se pudo cargar la librería de PDF. Verifica tu conexión a internet.', true);
+        return;
+      }
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const marginX = 48;
+      let y = 56;
+
+      const counts = { entregado: 0, devuelto: 0 };
+      let noRetiradoCount = 0;
+      runners.forEach(r => {
+        if (r.status === 'entregado') counts.entregado++;
+        else if (r.status === 'devuelto') counts.devuelto++;
+        else noRetiradoCount++;
+      });
+      const total = runners.length;
+      const stats = raceConfig.eventStats;
+      const statsAvailable = !!stats;
+
+      function sectionTitle(title) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.text(title, marginX, y);
+        y += 6;
+        doc.setDrawColor(200);
+        doc.line(marginX, y, pageWidth - marginX, y);
+        y += 18;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(11);
+      }
+      function row(label, value) {
+        doc.text(String(label), marginX, y);
+        doc.setFont('helvetica', 'bold');
+        doc.text(String(value), pageWidth - marginX, y, { align: 'right' });
+        doc.setFont('helvetica', 'normal');
+        y += 20;
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(18);
+      doc.text('Reporte del Evento', marginX, y);
+      y += 22;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(90);
+      doc.text('Fecha de la carrera: ' + (raceConfig.raceDate ? fmtDate(raceConfig.raceDate) : 'Sin fecha configurada'), marginX, y);
+      y += 14;
+      doc.text('Generado: ' + new Date().toLocaleString('es-PA'), marginX, y);
+      y += 28;
+      doc.setTextColor(0);
+
+      sectionTitle('Participantes');
+      row('Total de participantes inscritos', total);
+      row('Participantes inicialmente registrados', statsAvailable ? stats.baselineTotal : 'N/D');
+      row('Registros nuevos', statsAvailable ? stats.newRegistrations : 'N/D');
+      row('Cantidad de modificaciones', statsAvailable ? stats.modifications : 'N/D');
+      y += 12;
+
+      sectionTitle('Entrega de chips');
+      row('Retiraron chip', counts.entregado + counts.devuelto);
+      row('No retiraron chip', noRetiradoCount);
+      row('   Entregados sin devolver', counts.entregado);
+      row('   Devueltos', counts.devuelto);
+
+      if (!statsAvailable) {
+        y += 10;
+        doc.setFontSize(9);
+        doc.setTextColor(180, 60, 40);
+        doc.text('Nota: actualiza tu Google Apps Script a la última versión para ver los datos de', marginX, y);
+        y += 12;
+        doc.text('registros nuevos y modificaciones (Implementar > Administrar implementaciones > Nueva version).', marginX, y);
+        doc.setTextColor(0);
+      }
+
+      doc.save('Reporte_Evento_' + new Date().toISOString().slice(0, 10) + '.pdf');
+      showToast('PDF del evento descargado');
     }
 
     /* ---------- view switching ---------- */
