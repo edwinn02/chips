@@ -1,0 +1,20 @@
+{
+  "name": "Control de Carrera y Chips",
+  "short_name": "Carrera Chips",
+  "description": "Entrega de chips, cronometraje y resultados de carrera",
+  "lang": "es-PA",
+  "start_url": "./Index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0E1013",
+  "theme_color": "#FFC93C",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
