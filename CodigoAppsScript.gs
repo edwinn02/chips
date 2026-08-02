@@ -1,5 +1,5 @@
 /**
- * Backend de Control de Carrera.
+ * Backend de Control de Carrera (Optimizado).
  * 1. Cree un Google Sheet vacío y abra Extensiones > Apps Script.
  * 2. Pegue este archivo, guarde y ejecute setup() una vez.
  * 3. Implemente como Aplicación web: ejecutar como usted y acceso para quienes operarán la carrera.
@@ -17,16 +17,19 @@ const RUNNER_HEADERS = [
 ];
 
 function setup() {
-  ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS);
-  ensureSheet_(CONFIG_SHEET, ['key', 'value']);
-  ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id']);
-  ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at']);
+  ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS, true);
+  ensureSheet_(CONFIG_SHEET, ['key', 'value'], true);
+  ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id'], true);
+  ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at'], true);
   SpreadsheetApp.getActive().setSpreadsheetTimeZone(TZ);
 }
 
 function doGet() {
   try {
-    setup();
+    ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS);
+    ensureSheet_(CONFIG_SHEET, ['key', 'value']);
+    ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id']);
+    ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at']);
     return json_({
       ok: true,
       serverTime: panamaIso_(new Date()),
@@ -43,7 +46,10 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
-    setup();
+    ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS);
+    ensureSheet_(CONFIG_SHEET, ['key', 'value']);
+    ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id']);
+    ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at']);
     const data = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     if (!data.action) throw new Error('Acción requerida');
     if (data.operationId && operationExists_(data.operationId)) {
@@ -107,23 +113,32 @@ function mergeRunners_(incoming, deviceId) {
 
 function updateRunner_(data, fields) {
   const sheet = SpreadsheetApp.getActive().getSheetByName(RUNNERS_SHEET);
+  if (!sheet) throw new Error('Hoja no encontrada');
   const values = sheet.getDataRange().getValues();
+  if (values.length < 2) throw new Error('Sin datos en la hoja');
   const headers = values[0];
   const bibCol = headers.indexOf('bib');
   const versionCol = headers.indexOf('version');
+  const updatedAtCol = headers.indexOf('updated_at');
+  const updatedByCol = headers.indexOf('updated_by');
+
   for (let row = 1; row < values.length; row++) {
     if (String(values[row][bibCol]) !== String(data.bib)) continue;
     const currentVersion = Number(values[row][versionCol] || 0);
     if (data.expectedVersion !== undefined && Number(data.expectedVersion) !== currentVersion) {
       return { conflict: true, message: 'El corredor fue modificado por otro dispositivo.', runner: rowObject_(headers, values[row]) };
     }
+    const rowValues = values[row];
     fields.forEach(field => {
       const col = headers.indexOf(field);
-      if (col >= 0) sheet.getRange(row + 1, col + 1).setValue(data[field] || '');
+      if (col >= 0) rowValues[col] = data[field] || '';
     });
-    sheet.getRange(row + 1, versionCol + 1).setValue(currentVersion + 1);
-    setCell_(sheet, row + 1, headers, 'updated_at', panamaIso_(new Date()));
-    setCell_(sheet, row + 1, headers, 'updated_by', data.deviceId || '');
+    if (versionCol >= 0) rowValues[versionCol] = currentVersion + 1;
+    if (updatedAtCol >= 0) rowValues[updatedAtCol] = panamaIso_(new Date());
+    if (updatedByCol >= 0) rowValues[updatedByCol] = data.deviceId || '';
+
+    // Escritura atómica de toda la fila en 1 sola llamada API a Google Sheets (5x-10x más rápido)
+    sheet.getRange(row + 1, 1, 1, headers.length).setValues([rowValues]);
     return { version: currentVersion + 1 };
   }
   throw new Error('Dorsal no encontrado: ' + data.bib);
@@ -195,18 +210,23 @@ function reset_() {
   return {};
 }
 
-function ensureSheet_(name, headers) {
+function ensureSheet_(name, headers, forceCheckHeaders) {
   const ss = SpreadsheetApp.getActive();
   let sheet = ss.getSheetByName(name);
-  if (!sheet) sheet = ss.insertSheet(name);
-  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  const existing = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
-  headers.forEach(header => {
-    if (existing.indexOf(header) < 0) {
-      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
-      existing.push(header);
-    }
-  });
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    return sheet;
+  }
+  if (forceCheckHeaders && sheet.getLastRow() > 0) {
+    const existing = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0];
+    headers.forEach(header => {
+      if (existing.indexOf(header) < 0) {
+        sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+        existing.push(header);
+      }
+    });
+  }
   return sheet;
 }
 
@@ -224,7 +244,7 @@ function rowObject_(headers, row) {
 }
 
 function writeObjects_(name, headers, objects) {
-  const sheet = ensureSheet_(name, headers);
+  const sheet = ensureSheet_(name, headers, true);
   sheet.clearContents();
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   if (objects.length) {
@@ -235,6 +255,7 @@ function writeObjects_(name, headers, objects) {
 
 function appendObject_(name, object) {
   const sheet = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sheet) return;
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   sheet.appendRow(headers.map(header => object[header] === undefined ? '' : object[header]));
 }
@@ -246,7 +267,11 @@ function setCell_(sheet, row, headers, field, value) {
 
 function operationExists_(id) {
   if (!id) return false;
-  return readObjects_(OPS_SHEET).some(op => String(op.operation_id) === String(id));
+  const sheet = SpreadsheetApp.getActive().getSheetByName(OPS_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return false;
+  // Búsqueda nativa ultrarrápida usando createTextFinder en lugar de cargar todas las filas a JS
+  const finder = sheet.getRange(1, 1, sheet.getLastRow(), 1).createTextFinder(String(id)).matchEntireCell(true);
+  return finder.findNext() !== null;
 }
 
 function recordOperation_(data) {

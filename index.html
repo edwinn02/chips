@@ -1414,6 +1414,7 @@
     let clockIsSynced = false;
     let pollTimer = null;
     let isSyncing = false;
+    let isPosting = false;
     let raceConfig = JSON.parse(localStorage.getItem(CONFIG_CACHE_KEY) || '{"raceDate":"","heatStartTimes":{}}');
     let arrivalEditOpen = {}; // bib -> true si tiene el campo de edición manual abierto
     let arrivalLog = []; // historial de escaneos rápidos (más reciente primero)
@@ -1551,25 +1552,30 @@
       return data;
     }
     async function gasPost(payload) {
-      payload = {
-        ...payload,
-        operationId: payload.operationId || newId(),
-        deviceId,
-        clientTime: officialTimestamp()
-      };
-      const res = await fetch(gasUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload),
-        cache: 'no-store'
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        const error = new Error(data.error || 'Error al guardar los datos');
-        error.serverRejected = true;
-        throw error;
+      isPosting = true;
+      try {
+        payload = {
+          ...payload,
+          operationId: payload.operationId || newId(),
+          deviceId,
+          clientTime: officialTimestamp()
+        };
+        const res = await fetch(gasUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload),
+          cache: 'no-store'
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          const error = new Error(data.error || 'Error al guardar los datos');
+          error.serverRejected = true;
+          throw error;
+        }
+        return data;
+      } finally {
+        isPosting = false;
       }
-      return data;
     }
 
     function makeOperation(action, payload, applyLocal, description) {
@@ -1709,6 +1715,7 @@
     function startPolling() {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(() => {
+        if (isPosting || isSyncing) return;
         if (offlineQueue.length) processOfflineQueue();
         else if (document.visibilityState === 'visible') syncFromSheet(false);
       }, POLL_INTERVAL_MS);
