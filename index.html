@@ -1415,6 +1415,7 @@
     let pollTimer = null;
     let isSyncing = false;
     let isPosting = false;
+    let pendingLocalEdits = {};
     let raceConfig = JSON.parse(localStorage.getItem(CONFIG_CACHE_KEY) || '{"raceDate":"","heatStartTimes":{}}');
     let arrivalEditOpen = {}; // bib -> true si tiene el campo de edición manual abierto
     let arrivalLog = []; // historial de escaneos rápidos (más reciente primero)
@@ -1636,7 +1637,27 @@
       if (showLoadingState) setSyncStatus('syncing', 'Sincronizando…');
       try {
         const data = await gasGet();
-        runners = (data.runners || []).map(normalizeRunner);
+        const serverRunners = (data.runners || []).map(normalizeRunner);
+        const now = Date.now();
+
+        runners = serverRunners.map(sr => {
+          const pending = pendingLocalEdits[sr.bib];
+          if (!pending) return sr;
+
+          if (sr.version > pending.expectedVersion || (now - pending.updatedAt > 60000)) {
+            delete pendingLocalEdits[sr.bib];
+            return sr;
+          }
+
+          return {
+            ...sr,
+            status: pending.status !== undefined ? pending.status : sr.status,
+            delivered_at: pending.delivered_at !== undefined ? pending.delivered_at : sr.delivered_at,
+            returned_at: pending.returned_at !== undefined ? pending.returned_at : sr.returned_at,
+            arrival_time: pending.arrival_time !== undefined ? pending.arrival_time : sr.arrival_time,
+            arrival_timestamp: pending.arrival_timestamp !== undefined ? pending.arrival_timestamp : sr.arrival_timestamp
+          };
+        });
         raceConfig = data.config || { raceDate: '', heatStartTimes: {} };
         localStorage.setItem(RUNNERS_CACHE_KEY, JSON.stringify(runners));
         localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(raceConfig));
@@ -1876,6 +1897,16 @@
       if (status === 'entregado') r.delivered_at = officialTimestamp();
       if (status === 'devuelto') r.returned_at = officialTimestamp();
       if (status === 'pendiente') { r.delivered_at = null; r.returned_at = null; }
+
+      pendingLocalEdits[r.bib] = {
+        ...pendingLocalEdits[r.bib],
+        status: r.status,
+        delivered_at: r.delivered_at || null,
+        returned_at: r.returned_at || null,
+        expectedVersion: r.version || 0,
+        updatedAt: Date.now()
+      };
+
       renderAll();
 
       const labels = { entregado: 'Chip entregado', devuelto: 'Chip devuelto', pendiente: 'Marcado como pendiente' };
@@ -1885,7 +1916,13 @@
         bib: r.bib, status: r.status, delivered_at: r.delivered_at || '',
         returned_at: r.returned_at || '', expectedVersion: r.version || 0
       }, { description: labels[status] });
-      if (statusResult.version) r.version = statusResult.version;
+
+      if (statusResult && statusResult.version) {
+        r.version = statusResult.version;
+        if (pendingLocalEdits[r.bib] && pendingLocalEdits[r.bib].expectedVersion <= r.version) {
+          delete pendingLocalEdits[r.bib];
+        }
+      }
     }
 
     /* ---------- configuración de heats ---------- */
@@ -1968,13 +2005,30 @@
           return;
         }
       }
+      const arrTs = timeStr ? officialTimestamp() : '';
+      r.arrival_timestamp = arrTs;
+
+      pendingLocalEdits[r.bib] = {
+        ...pendingLocalEdits[r.bib],
+        arrival_time: r.arrival_time,
+        arrival_timestamp: arrTs,
+        expectedVersion: r.version || 0,
+        updatedAt: Date.now()
+      };
+
       renderArrivalList();
       renderResults();
       const arrivalResult = await submitOperation('updateArrival', {
-        bib: r.bib, arrival_time: timeStr, arrival_timestamp: timeStr ? officialTimestamp() : '',
+        bib: r.bib, arrival_time: timeStr, arrival_timestamp: arrTs,
         expectedVersion: r.version || 0
       }, { description: timeStr ? 'Registro de llegada' : 'Eliminación de llegada' });
-      if (arrivalResult.version) r.version = arrivalResult.version;
+
+      if (arrivalResult && arrivalResult.version) {
+        r.version = arrivalResult.version;
+        if (pendingLocalEdits[r.bib] && pendingLocalEdits[r.bib].expectedVersion <= r.version) {
+          delete pendingLocalEdits[r.bib];
+        }
+      }
       showToast(timeStr ? `${fullName(r)}: llegada registrada ${timeStr}` : `${fullName(r)}: llegada borrada`);
     }
 
@@ -2204,7 +2258,15 @@
         }
 
         const r = runners.find(x => x.bib === bib);
-        if (result.wasOfficial && r) r.arrival_time = time;
+        if (result.wasOfficial && r) {
+          r.arrival_time = time;
+          pendingLocalEdits[bib] = {
+            ...pendingLocalEdits[bib],
+            arrival_time: time,
+            expectedVersion: r.version || 0,
+            updatedAt: Date.now()
+          };
+        }
 
         if (!result.matched) {
           showToast(`⚠ Dorsal ${bib} no encontrado. Se guardó en el historial para revisar.`, true);
