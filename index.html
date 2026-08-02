@@ -1196,7 +1196,13 @@
       </div>
 
       <div class="panel">
-        <h2>Registrar llegada <button class="btn btn-sm" id="btn-refresh-llegadas">↻ Sincronizar</button></h2>
+        <h2>
+          Registrar llegada
+          <div>
+            <button class="btn btn-sm btn-ghost" onclick="exportArrivalsToExcel()">📊 Exportar Excel</button>
+            <button class="btn btn-sm" id="btn-refresh-llegadas">↻ Sincronizar</button>
+          </div>
+        </h2>
         <div class="search-row">
           <input type="text" id="arrival-search-input" placeholder="Buscar por nombre, apellido, dorsal o EPC…"
             autocomplete="off">
@@ -1204,7 +1210,7 @@
         <div class="filter-chips">
           <button class="chip-filter active" data-afilter="all">Todos</button>
           <button class="chip-filter" data-afilter="pending">Sin registrar</button>
-          <button class="chip-filter" data-afilter="done">Registrados</button>
+          <button class="chip-filter" data-afilter="done">Registrados (Orden de llegada)</button>
         </div>
         <div class="runner-list" id="arrival-list"></div>
       </div>
@@ -1591,26 +1597,49 @@
       updateOfflineBadge();
     }
 
+    let submitQueue = Promise.resolve();
+    function enqueueSubmit(taskFn) {
+      const res = new Promise((resolve, reject) => {
+        submitQueue = submitQueue.then(async () => {
+          try {
+            const val = await taskFn();
+            resolve(val);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+      return res;
+    }
+
     async function submitOperation(action, payload, options = {}) {
       const operation = makeOperation(action, payload, null, options.description || action);
       if (options.applyLocal) options.applyLocal();
-      try {
-        const result = await gasPost({ action, ...payload, operationId: operation.operationId });
-        if (result.conflict) {
-          showToast(result.message || 'Otro dispositivo modificó este registro. Se cargó la versión más reciente.', true);
-          await syncFromSheet(false);
+      return enqueueSubmit(async () => {
+        try {
+          const result = await gasPost({ action, ...payload, operationId: operation.operationId });
+          if (result.conflict) {
+            showToast(result.message || 'Otro dispositivo modificó este registro. Se cargó la versión más reciente.', true);
+            await syncFromSheet(false);
+          }
+          return result;
+        } catch (err) {
+          if (err.serverRejected) {
+            if (err.message && err.message.toLowerCase().includes('candado')) {
+              offlineQueue.push(operation);
+              persistOfflineQueue();
+              showToast(`${options.description || 'Operación'} guardada offline por congestión del servidor. Se sincronizará automáticamente.`);
+              return { queued: true };
+            }
+            showToast(err.message, true);
+            throw err;
+          }
+          offlineQueue.push(operation);
+          persistOfflineQueue();
+          showToast(`${options.description || 'Operación'} guardada sin conexión. Se sincronizará automáticamente.`);
+          return { queued: true };
         }
-        return result;
-      } catch (err) {
-        if (err.serverRejected) {
-          showToast(err.message, true);
-          throw err;
-        }
-        offlineQueue.push(operation);
-        persistOfflineQueue();
-        showToast(`${options.description || 'Operación'} guardada sin conexión. Se sincronizará automáticamente.`);
-        return { queued: true };
-      }
+      });
     }
 
     function normalizeRunner(r) {
@@ -2046,9 +2075,12 @@
         return;
       }
 
-      let filtered = runners;
+      let filtered = [...runners];
       if (arrivalFilter === 'pending') filtered = filtered.filter(r => !r.arrival_time);
-      if (arrivalFilter === 'done') filtered = filtered.filter(r => !!r.arrival_time);
+      if (arrivalFilter === 'done') {
+        filtered = filtered.filter(r => !!r.arrival_time);
+        filtered.sort((a, b) => (a.arrival_timestamp || a.arrival_time || '').localeCompare(b.arrival_timestamp || b.arrival_time || ''));
+      }
       if (arrivalQuery.length >= 1) {
         const q = arrivalQuery.toLowerCase();
         filtered = filtered.filter(r => {
@@ -2070,7 +2102,7 @@
         truncated = true;
       }
 
-      list.innerHTML = toRender.map(r => {
+      list.innerHTML = toRender.map((r, index) => {
         const elapsed = getElapsedSeconds(r);
         const heatStart = raceConfig.heatStartTimes[r.item];
         let statusLine;
@@ -2082,11 +2114,13 @@
           statusLine = 'Sin registrar llegada';
         }
         const editOpen = !!arrivalEditOpen[r.bib];
+        const rankBadge = (r.arrival_time && arrivalFilter === 'done') ? `<span class="mono" style="font-weight:700; color:var(--green); margin-right:6px;">#${index + 1}</span>` : '';
+
         return `
       <div class="runner-row">
         <div class="bib-badge mono" style="--badge-color:${r.arrival_time ? 'var(--green)' : 'var(--text-dim)'}">${r.bib}</div>
         <div class="runner-info">
-          <div class="name">${fullName(r) || '(sin nombre)'}</div>
+          <div class="name">${rankBadge}${fullName(r) || '(sin nombre)'}</div>
           <div class="meta">${[r.item ? 'Heat ' + r.item : 'Sin heat', r.age_group, r.gender].filter(Boolean).join(' · ')}</div>
           <div class="meta">${statusLine}</div>
           ${editOpen ? `
@@ -2222,6 +2256,53 @@
       pendingWrap.innerHTML = filteredPending.length
         ? `<p class="search-hint" style="margin-top:16px;">${filteredPending.length} corredor(es) en este filtro aún sin tiempo calculado (falta llegada registrada o falta configurar la hora de salida de su heat).</p>`
         : '';
+    }
+
+    /* ---------- exportación a excel ---------- */
+    function exportArrivalsToExcel() {
+      const registered = runners.filter(r => !!r.arrival_time);
+      registered.sort((a, b) => (a.arrival_timestamp || a.arrival_time || '').localeCompare(b.arrival_timestamp || b.arrival_time || ''));
+
+      if (!registered.length) {
+        showToast('No hay llegadas registradas para exportar', true);
+        return;
+      }
+
+      const rows = registered.map((r, index) => {
+        const heatStart = raceConfig.heatStartTimes[r.item] || '';
+        const elapsedSec = getElapsedSeconds(r);
+        const elapsedClock = elapsedSec !== null ? secondsToClock(elapsedSec) : '—';
+        const statusTxt = r.status === 'entregado' ? 'Entregado' : (r.status === 'devuelto' ? 'Devuelto' : 'No retirado');
+
+        return {
+          '#': index + 1,
+          'Dorsal': r.bib,
+          'Nombre': r.name || '',
+          'Apellido': r.surname || '',
+          'Heat / Distancia': r.item || '',
+          'Categoría': r.age_group || '',
+          'Género': r.gender || '',
+          'Equipo': r.team || '',
+          'Hora Salida Heat': heatStart || 'No configurada',
+          'Hora de Llegada': r.arrival_time || '',
+          'Tiempo Neto (Llegada - Salida)': elapsedClock,
+          'Estado Chip': statusTxt,
+          'Timestamp Oficial': r.arrival_timestamp || ''
+        };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Llegadas_y_Tiempos');
+
+      const raceTitle = (raceConfig.raceName || 'Carrera').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `Llegadas_y_Tiempos_${raceTitle}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      XLSX.writeFile(workbook, fileName);
+      showToast(`Excel exportado con ${rows.length} llegadas registradas`);
+    }
+
+    function exportToExcel() {
+      exportArrivalsToExcel();
     }
 
     /* ---------- entrada rápida por dorsal (para uso desde celular) ---------- */

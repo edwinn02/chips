@@ -1,5 +1,5 @@
 /**
- * Backend de Control de Carrera (Optimizado).
+ * Backend de Control de Carrera (Ultrarrápido v2).
  * 1. Cree un Google Sheet vacío y abra Extensiones > Apps Script.
  * 2. Pegue este archivo, guarde y ejecute setup() una vez.
  * 3. Implemente como Aplicación web: ejecutar como usted y acceso para quienes operarán la carrera.
@@ -17,25 +17,23 @@ const RUNNER_HEADERS = [
 ];
 
 function setup() {
-  ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS, true);
-  ensureSheet_(CONFIG_SHEET, ['key', 'value'], true);
-  ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id'], true);
-  ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at'], true);
-  SpreadsheetApp.getActive().setSpreadsheetTimeZone(TZ);
+  const ss = SpreadsheetApp.getActive();
+  ensureSheet_(ss, RUNNERS_SHEET, RUNNER_HEADERS, true);
+  ensureSheet_(ss, CONFIG_SHEET, ['key', 'value'], true);
+  ensureSheet_(ss, LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id'], true);
+  ensureSheet_(ss, OPS_SHEET, ['operation_id','action','device_id','processed_at'], true);
+  ss.setSpreadsheetTimeZone(TZ);
 }
 
 function doGet() {
   try {
-    ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS);
-    ensureSheet_(CONFIG_SHEET, ['key', 'value']);
-    ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id']);
-    ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at']);
+    const ss = SpreadsheetApp.getActive();
     return json_({
       ok: true,
       serverTime: panamaIso_(new Date()),
-      runners: readObjects_(RUNNERS_SHEET),
-      config: getConfig_(),
-      arrivalLog: readObjects_(LOG_SHEET).slice(-80).reverse()
+      runners: readObjects_(ss, RUNNERS_SHEET),
+      config: getConfig_(ss),
+      arrivalLog: readObjects_(ss, LOG_SHEET).slice(-80).reverse()
     });
   } catch (error) {
     return json_({ ok: false, error: error.message });
@@ -46,17 +44,14 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
-    ensureSheet_(RUNNERS_SHEET, RUNNER_HEADERS);
-    ensureSheet_(CONFIG_SHEET, ['key', 'value']);
-    ensureSheet_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id']);
-    ensureSheet_(OPS_SHEET, ['operation_id','action','device_id','processed_at']);
+    const ss = SpreadsheetApp.getActive();
     const data = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     if (!data.action) throw new Error('Acción requerida');
-    if (data.operationId && operationExists_(data.operationId)) {
+    if (data.operationId && operationExists_(ss, data.operationId)) {
       return json_({ ok: true, duplicate: true, serverTime: panamaIso_(new Date()) });
     }
-    const result = route_(data);
-    if (data.operationId) recordOperation_(data);
+    const result = route_(ss, data);
+    if (data.operationId) recordOperation_(ss, data);
     return json_(Object.assign({ ok: true, serverTime: panamaIso_(new Date()) }, result || {}));
   } catch (error) {
     return json_({ ok: false, error: error.message, serverTime: panamaIso_(new Date()) });
@@ -65,22 +60,22 @@ function doPost(e) {
   }
 }
 
-function route_(data) {
+function route_(ss, data) {
   switch (data.action) {
-    case 'mergeRunners': return mergeRunners_(data.runners || [], data.deviceId);
-    case 'replaceAll': return mergeRunners_(data.runners || [], data.deviceId);
-    case 'updateStatus': return updateRunner_(data, ['status','delivered_at','returned_at']);
-    case 'updateArrival': return updateRunner_(data, ['arrival_time','arrival_timestamp']);
-    case 'quickArrival': return quickArrival_(data);
-    case 'correctQuickArrival': return correctQuickArrival_(data);
-    case 'setConfig': return setConfig_(data);
-    case 'reset': return reset_();
+    case 'mergeRunners': return mergeRunners_(ss, data.runners || [], data.deviceId);
+    case 'replaceAll': return mergeRunners_(ss, data.runners || [], data.deviceId);
+    case 'updateStatus': return updateRunner_(ss, data, ['status','delivered_at','returned_at']);
+    case 'updateArrival': return updateRunner_(ss, data, ['arrival_time','arrival_timestamp']);
+    case 'quickArrival': return quickArrival_(ss, data);
+    case 'correctQuickArrival': return correctQuickArrival_(ss, data);
+    case 'setConfig': return setConfig_(ss, data);
+    case 'reset': return reset_(ss);
     default: throw new Error('Acción no reconocida: ' + data.action);
   }
 }
 
-function mergeRunners_(incoming, deviceId) {
-  const current = readObjects_(RUNNERS_SHEET);
+function mergeRunners_(ss, incoming, deviceId) {
+  const current = readObjects_(ss, RUNNERS_SHEET);
   const byBib = {};
   current.forEach(r => byBib[String(r.bib)] = r);
   let created = 0, updated = 0;
@@ -107,14 +102,15 @@ function mergeRunners_(incoming, deviceId) {
     });
     updated++;
   });
-  writeObjects_(RUNNERS_SHEET, RUNNER_HEADERS, Object.keys(byBib).map(key => byBib[key]));
+  writeObjects_(ss, RUNNERS_SHEET, RUNNER_HEADERS, Object.keys(byBib).map(key => byBib[key]));
   return { created, updated, total: Object.keys(byBib).length };
 }
 
-function updateRunner_(data, fields) {
-  const sheet = SpreadsheetApp.getActive().getSheetByName(RUNNERS_SHEET);
-  if (!sheet) throw new Error('Hoja no encontrada');
-  const values = sheet.getDataRange().getValues();
+function updateRunner_(ss, data, fields) {
+  const sheet = ss.getSheetByName(RUNNERS_SHEET);
+  if (!sheet) throw new Error('Hoja de corredores no encontrada');
+  const range = sheet.getDataRange();
+  const values = range.getValues();
   if (values.length < 2) throw new Error('Sin datos en la hoja');
   const headers = values[0];
   const bibCol = headers.indexOf('bib');
@@ -137,58 +133,58 @@ function updateRunner_(data, fields) {
     if (updatedAtCol >= 0) rowValues[updatedAtCol] = panamaIso_(new Date());
     if (updatedByCol >= 0) rowValues[updatedByCol] = data.deviceId || '';
 
-    // Escritura atómica de toda la fila en 1 sola llamada API a Google Sheets (5x-10x más rápido)
+    // Escritura ultrarrápida de fila completa en 1 sola llamada API (~100ms)
     sheet.getRange(row + 1, 1, 1, headers.length).setValues([rowValues]);
     return { version: currentVersion + 1 };
   }
   throw new Error('Dorsal no encontrado: ' + data.bib);
 }
 
-function quickArrival_(data) {
-  const runners = readObjects_(RUNNERS_SHEET);
+function quickArrival_(ss, data) {
+  const runners = readObjects_(ss, RUNNERS_SHEET);
   const runner = runners.find(r => String(r.bib) === String(data.bib));
   const wasOfficial = !!runner && !runner.arrival_time;
   if (wasOfficial) {
     data.expectedVersion = Number(runner.version || 0);
     data.arrival_time = data.time;
-    updateRunner_(data, ['arrival_time','arrival_timestamp']);
+    updateRunner_(ss, data, ['arrival_time','arrival_timestamp']);
   }
   const id = Utilities.getUuid();
-  appendObject_(LOG_SHEET, {
-    id, bib: data.bib, time: data.time, recorded_at: data.arrival_timestamp || panamaIso_(new Date()),
-    matched: !!runner, was_official: wasOfficial, device_id: data.deviceId || '', operation_id: data.operationId || ''
-  });
+  appendObjectDirect_(ss, LOG_SHEET, [
+    id, data.bib, data.time, data.arrival_timestamp || panamaIso_(new Date()),
+    !!runner, wasOfficial, data.deviceId || '', data.operationId || ''
+  ]);
   return {
     id, matched: !!runner, wasOfficial, existingTime: runner ? runner.arrival_time : '',
     runnerName: runner ? [runner.name, runner.surname].filter(Boolean).join(' ') : ''
   };
 }
 
-function correctQuickArrival_(data) {
-  const runners = readObjects_(RUNNERS_SHEET);
+function correctQuickArrival_(ss, data) {
+  const runners = readObjects_(ss, RUNNERS_SHEET);
   const oldRunner = runners.find(r => String(r.bib) === String(data.oldBib));
   const newRunner = runners.find(r => String(r.bib) === String(data.newBib));
   if (!newRunner) return { matched: false, wasOfficial: false };
   if (oldRunner && oldRunner.arrival_time === data.time) {
-    updateRunner_({ bib: data.oldBib, arrival_time: '', arrival_timestamp: '', deviceId: data.deviceId }, ['arrival_time','arrival_timestamp']);
+    updateRunner_(ss, { bib: data.oldBib, arrival_time: '', arrival_timestamp: '', deviceId: data.deviceId }, ['arrival_time','arrival_timestamp']);
   }
   let wasOfficial = false;
   if (!newRunner.arrival_time) {
-    updateRunner_({
+    updateRunner_(ss, {
       bib: data.newBib, arrival_time: data.time, arrival_timestamp: data.clientTime,
       deviceId: data.deviceId
     }, ['arrival_time','arrival_timestamp']);
     wasOfficial = true;
   }
-  appendObject_(LOG_SHEET, {
-    id: Utilities.getUuid(), bib: data.newBib, time: data.time, recorded_at: data.clientTime,
-    matched: true, was_official: wasOfficial, device_id: data.deviceId || '', operation_id: data.operationId || ''
-  });
+  appendObjectDirect_(ss, LOG_SHEET, [
+    Utilities.getUuid(), data.newBib, data.time, data.clientTime,
+    true, wasOfficial, data.deviceId || '', data.operationId || ''
+  ]);
   return { matched: true, wasOfficial, runnerName: [newRunner.name, newRunner.surname].filter(Boolean).join(' ') };
 }
 
-function getConfig_() {
-  const rows = readObjects_(CONFIG_SHEET);
+function getConfig_(ss) {
+  const rows = readObjects_(ss, CONFIG_SHEET);
   const map = {};
   rows.forEach(r => map[r.key] = r.value);
   let heats = {};
@@ -196,22 +192,21 @@ function getConfig_() {
   return { raceDate: map.raceDate || '', heatStartTimes: heats };
 }
 
-function setConfig_(data) {
-  writeObjects_(CONFIG_SHEET, ['key','value'], [
+function setConfig_(ss, data) {
+  writeObjects_(ss, CONFIG_SHEET, ['key','value'], [
     { key: 'raceDate', value: data.raceDate || '' },
     { key: 'heatStartTimes', value: JSON.stringify(data.heatStartTimes || {}) }
   ]);
   return {};
 }
 
-function reset_() {
-  writeObjects_(RUNNERS_SHEET, RUNNER_HEADERS, []);
-  writeObjects_(LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id'], []);
+function reset_(ss) {
+  writeObjects_(ss, RUNNERS_SHEET, RUNNER_HEADERS, []);
+  writeObjects_(ss, LOG_SHEET, ['id','bib','time','recorded_at','matched','was_official','device_id','operation_id'], []);
   return {};
 }
 
-function ensureSheet_(name, headers, forceCheckHeaders) {
-  const ss = SpreadsheetApp.getActive();
+function ensureSheet_(ss, name, headers, forceCheckHeaders) {
   let sheet = ss.getSheetByName(name);
   if (!sheet) {
     sheet = ss.insertSheet(name);
@@ -230,8 +225,8 @@ function ensureSheet_(name, headers, forceCheckHeaders) {
   return sheet;
 }
 
-function readObjects_(name) {
-  const sheet = SpreadsheetApp.getActive().getSheetByName(name);
+function readObjects_(ss, name) {
+  const sheet = ss.getSheetByName(name);
   if (!sheet || sheet.getLastRow() < 2) return [];
   const values = sheet.getDataRange().getValues();
   return values.slice(1).filter(row => row.some(v => v !== '')).map(row => rowObject_(values[0], row));
@@ -243,8 +238,8 @@ function rowObject_(headers, row) {
   return object;
 }
 
-function writeObjects_(name, headers, objects) {
-  const sheet = ensureSheet_(name, headers, true);
+function writeObjects_(ss, name, headers, objects) {
+  const sheet = ensureSheet_(ss, name, headers, true);
   sheet.clearContents();
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   if (objects.length) {
@@ -253,32 +248,21 @@ function writeObjects_(name, headers, objects) {
   }
 }
 
-function appendObject_(name, object) {
-  const sheet = SpreadsheetApp.getActive().getSheetByName(name);
-  if (!sheet) return;
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  sheet.appendRow(headers.map(header => object[header] === undefined ? '' : object[header]));
+function appendObjectDirect_(ss, name, rowValues) {
+  const sheet = ss.getSheetByName(name);
+  if (sheet) sheet.appendRow(rowValues);
 }
 
-function setCell_(sheet, row, headers, field, value) {
-  const col = headers.indexOf(field);
-  if (col >= 0) sheet.getRange(row, col + 1).setValue(value);
-}
-
-function operationExists_(id) {
+function operationExists_(ss, id) {
   if (!id) return false;
-  const sheet = SpreadsheetApp.getActive().getSheetByName(OPS_SHEET);
+  const sheet = ss.getSheetByName(OPS_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return false;
-  // Búsqueda nativa ultrarrápida usando createTextFinder en lugar de cargar todas las filas a JS
   const finder = sheet.getRange(1, 1, sheet.getLastRow(), 1).createTextFinder(String(id)).matchEntireCell(true);
   return finder.findNext() !== null;
 }
 
-function recordOperation_(data) {
-  appendObject_(OPS_SHEET, {
-    operation_id: data.operationId, action: data.action, device_id: data.deviceId || '',
-    processed_at: panamaIso_(new Date())
-  });
+function recordOperation_(ss, data) {
+  appendObjectDirect_(ss, OPS_SHEET, [data.operationId, data.action, data.deviceId || '', panamaIso_(new Date())]);
 }
 
 function panamaIso_(date) {
