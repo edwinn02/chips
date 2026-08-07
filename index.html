@@ -1458,28 +1458,54 @@
     function sanitizeTime(t) {
       if (!t) return '';
       const str = String(t).trim();
-      const timeMatch = str.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-      if (timeMatch) {
-        const h = timeMatch[1].padStart(2, '0');
-        const m = timeMatch[2];
-        const s = timeMatch[3] ? timeMatch[3].padStart(2, '0') : '00';
-        return `${h}:${m}:${s}`;
+      if (!str) return '';
+
+      // Si es un ISO Date string (ej: 2026-08-07T14:30:00-05:00)
+      if (str.includes('T')) {
+        const d = new Date(str);
+        if (!isNaN(d.getTime())) {
+          const p = panamaParts(d);
+          return `${p.hour}:${p.minute}:${p.second}`;
+        }
+      }
+
+      // Detectar AM / PM (case-insensitive, soporta PM, AM, p.m., a.m.)
+      const isPM = /p\.?m\.?/i.test(str);
+      const isAM = /a\.?m\.?/i.test(str);
+
+      // Extraer dígitos de tiempo (HH:mm o HH:mm:ss)
+      const match = str.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if (match) {
+        let h = parseInt(match[1], 10);
+        const m = match[2].padStart(2, '0');
+        const s = match[3] ? match[3].padStart(2, '0') : '00';
+
+        if (isPM && h < 12) h += 12;
+        if (isAM && h === 12) h = 0;
+
+        return `${String(h).padStart(2, '0')}:${m}:${s}`;
       }
       return str;
     }
 
     function timeStrToSeconds(t) {
       if (!t) return null;
-      const parts = String(t).split(':').map(Number);
-      if (parts.some(isNaN)) return null;
-      const [h, m, s] = [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+      const clean = sanitizeTime(t);
+      if (!clean) return null;
+      const parts = clean.split(':').map(Number);
+      if (parts.length < 2 || parts.some(isNaN)) return null;
+      const h = parts[0] || 0;
+      const m = parts[1] || 0;
+      const s = parts[2] || 0;
       return h * 3600 + m * 60 + s;
     }
     function panamaParts(date) {
-      return Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-        timeZone: PANAMA_TIME_ZONE, hour12: false, year: 'numeric', month: '2-digit',
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+        timeZone: PANAMA_TIME_ZONE, hourCycle: 'h23', hour12: false, year: 'numeric', month: '2-digit',
         day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
       }).formatToParts(date).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+      if (parts.hour === '24') parts.hour = '00';
+      return parts;
     }
     function officialNow() {
       return new Date(Date.now() + serverClockOffsetMs);
@@ -1494,20 +1520,57 @@
     }
     function secondsToClock(totalSeconds) {
       if (totalSeconds === null || totalSeconds === undefined || isNaN(totalSeconds)) return '—';
+      if (totalSeconds < 0) return '⚠ Llegada anterior a salida';
       const h = Math.floor(totalSeconds / 3600);
       const m = Math.floor((totalSeconds % 3600) / 60);
       const s = Math.floor(totalSeconds % 60);
       return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
     }
     function getElapsedSeconds(r) {
-      if (!r.arrival_time) return null;
-      const heatStart = raceConfig.heatStartTimes[r.item];
+      if (!r || !r.arrival_time) return null;
+      
+      const itemKey = norm(r.item);
+      let heatStart = raceConfig.heatStartTimes ? raceConfig.heatStartTimes[r.item] : null;
+      if (!heatStart && raceConfig.heatStartTimes) {
+        for (const key in raceConfig.heatStartTimes) {
+          if (norm(key).toLowerCase() === itemKey.toLowerCase()) {
+            heatStart = raceConfig.heatStartTimes[key];
+            break;
+          }
+        }
+      }
       if (!heatStart) return null;
+
+      // Si existe timestamp oficial y fecha de la carrera, intentar cálculo exacto por fecha/hora
+      if (r.arrival_timestamp && raceConfig.raceDate) {
+        try {
+          const arrDate = new Date(r.arrival_timestamp);
+          const cleanHeatStart = sanitizeTime(heatStart);
+          const startDate = new Date(`${raceConfig.raceDate}T${cleanHeatStart}-05:00`);
+          if (!isNaN(arrDate.getTime()) && !isNaN(startDate.getTime())) {
+            const diffMs = arrDate.getTime() - startDate.getTime();
+            const diffSec = Math.floor(diffMs / 1000);
+            if (diffSec >= 0 && diffSec < 36 * 3600) {
+              return diffSec;
+            }
+          }
+        } catch (_) {}
+      }
+
       const arrivalSec = timeStrToSeconds(r.arrival_time);
       const startSec = timeStrToSeconds(heatStart);
       if (arrivalSec === null || startSec === null) return null;
+
       let diff = arrivalSec - startSec;
-      if (diff < 0) diff += 24 * 3600;
+      if (diff < 0) {
+        // Solo ajustar +24h si el inicio fue noche/madrugada (>=18:00) y la llegada fue temprano en la mañana (<=06:00)
+        if (startSec >= 18 * 3600 && arrivalSec <= 6 * 3600) {
+          diff += 24 * 3600;
+        } else {
+          // La llegada es previa a la salida configurada
+          return diff;
+        }
+      }
       return diff;
     }
 
@@ -2025,10 +2088,10 @@
     async function saveArrivalValue(bib, timeStr) {
       const r = runners.find(x => x.bib === bib);
       if (!r) return;
-      r.arrival_time = timeStr;
-      if (timeStr && raceConfig.heatStartTimes[r.item]) {
+      r.arrival_time = sanitizeTime(timeStr);
+      if (r.arrival_time && raceConfig.heatStartTimes[r.item]) {
         const elapsed = getElapsedSeconds(r);
-        if (elapsed !== null && elapsed < 30) {
+        if (elapsed !== null && elapsed >= 0 && elapsed < 30) {
           r.arrival_time = '';
           showToast('Alerta: la llegada produce un tiempo menor de 30 segundos. Verifica dorsal, heat y hora.', true);
           return;
@@ -2107,7 +2170,11 @@
         const heatStart = raceConfig.heatStartTimes[r.item];
         let statusLine;
         if (r.arrival_time && elapsed !== null) {
-          statusLine = `Llegó a las <span class="mono">${r.arrival_time}</span> · tiempo neto <span class="elapsed-tag">${secondsToClock(elapsed)}</span>`;
+          if (elapsed < 0) {
+            statusLine = `Llegó a las <span class="mono">${r.arrival_time}</span> · <span class="elapsed-tag" style="background:var(--red-light); color:var(--red);">⚠ Hora de llegada anterior a la salida</span>`;
+          } else {
+            statusLine = `Llegó a las <span class="mono">${r.arrival_time}</span> · tiempo neto <span class="elapsed-tag">${secondsToClock(elapsed)}</span>`;
+          }
         } else if (r.arrival_time && !heatStart) {
           statusLine = `Llegó a las <span class="mono">${r.arrival_time}</span> · falta configurar la hora de salida del heat ${r.item || '(sin heat)'}`;
         } else {
@@ -2195,7 +2262,7 @@
       let pending = [];
       runners.forEach(r => {
         const elapsed = getElapsedSeconds(r);
-        if (elapsed !== null) withTime.push({ r, elapsed, isOverall: false });
+        if (elapsed !== null && elapsed >= 0) withTime.push({ r, elapsed, isOverall: false });
         else pending.push(r);
       });
       withTime.sort((a, b) => a.elapsed - b.elapsed);
